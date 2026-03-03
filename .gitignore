@@ -1,0 +1,26 @@
+# Generated .gitignore for Rust/Cargo projects
+
+# Build artifacts
+/target/
+
+# Rust/Cargo
+/Cargo.lock
+
+# Binaries
+/*.exe
+/*.dll
+/*.so
+/*.dylib
+/*.pdb
+
+# Editor directories
+/.idea/
+.vscode/
+
+# OS files
+.DS_Store
+
+# Misc
+/bin/
+/obj/
+*.log

@@ -1,6 +1,9 @@
 use std::{collections::HashMap, fs, path::Path};
 
-use ink_model::{Container, InkDoc, RuntimeNode};
+use ink_model::{
+    ChoicePoint, Container, ControlCommandKind, Divert, InkDoc, PushPopType, RuntimeNode,
+    UnsupportedNode, UnsupportedNodeReason, VariableAssignment, VariableReference,
+};
 use serde_json::Value;
 
 #[derive(thiserror::Error, Debug)]
@@ -119,8 +122,14 @@ fn parse_node(v: &Value) -> Result<RuntimeNode, InkJsonError> {
                 return Ok(RuntimeNode::Str(stripped.to_string()));
             }
 
-            // 目前把其他字符串先视为 command token，后续再扩展到强类型命令枚举
-            Ok(RuntimeNode::Command(s.clone()))
+            if let Some(cmd) = ControlCommandKind::from_token(s) {
+                return Ok(RuntimeNode::ControlCommand(cmd));
+            }
+
+            Ok(RuntimeNode::Unsupported(UnsupportedNode {
+                raw: s.clone(),
+                reason: UnsupportedNodeReason::UnknownStringToken,
+            }))
         }
         Value::Array(_) => Ok(RuntimeNode::Container(parse_container(v)?)),
         Value::Object(map) => {
@@ -128,23 +137,167 @@ fn parse_node(v: &Value) -> Result<RuntimeNode, InkJsonError> {
                 return Ok(RuntimeNode::DivertTarget(target.to_string()));
             }
 
-            // 对常见 divert 对象先做占位保留，后续 runtime 逐步实现
-            if map.contains_key("->")
-                || map.contains_key("f()")
-                || map.contains_key("->t->")
-                || map.contains_key("x()")
-                || map.contains_key("*")
-                || map.contains_key("VAR=")
-                || map.contains_key("temp=")
-                || map.contains_key("VAR?")
-                || map.contains_key("CNT?")
-            {
-                return Ok(RuntimeNode::UnknownJson(v.to_string()));
+            if let Some(divert) = parse_divert_object(map) {
+                return Ok(RuntimeNode::Divert(divert));
             }
 
-            // 如果对象结构像容器尾部 named content，理论上应该已经在 parse_container 中处理
-            // 这里兜底保留，避免 silent drop
-            Ok(RuntimeNode::UnknownJson(v.to_string()))
+            if let Some(path) = map.get("*").and_then(Value::as_str) {
+                let flags = map.get("flg").and_then(Value::as_i64).unwrap_or_default() as i32;
+                return Ok(RuntimeNode::ChoicePoint(ChoicePoint {
+                    path: path.to_string(),
+                    flags,
+                }));
+            }
+
+            if let Some(name) = map.get("VAR?").and_then(Value::as_str) {
+                return Ok(RuntimeNode::VariableReference(VariableReference {
+                    name: Some(name.to_string()),
+                    read_count_path: None,
+                }));
+            }
+
+            if let Some(path) = map.get("CNT?").and_then(Value::as_str) {
+                return Ok(RuntimeNode::VariableReference(VariableReference {
+                    name: None,
+                    read_count_path: Some(path.to_string()),
+                }));
+            }
+
+            if let Some(name) = map.get("VAR=").and_then(Value::as_str) {
+                let is_new_declaration = !map.get("re").and_then(Value::as_bool).unwrap_or(false);
+                return Ok(RuntimeNode::VariableAssignment(VariableAssignment {
+                    name: name.to_string(),
+                    is_global: true,
+                    is_new_declaration,
+                }));
+            }
+
+            if let Some(name) = map.get("temp=").and_then(Value::as_str) {
+                let is_new_declaration = !map.get("re").and_then(Value::as_bool).unwrap_or(false);
+                return Ok(RuntimeNode::VariableAssignment(VariableAssignment {
+                    name: name.to_string(),
+                    is_global: false,
+                    is_new_declaration,
+                }));
+            }
+
+            Ok(RuntimeNode::Unsupported(UnsupportedNode {
+                raw: v.to_string(),
+                reason: UnsupportedNodeReason::UnsupportedObject,
+            }))
         }
+    }
+}
+
+fn parse_divert_object(map: &serde_json::Map<String, Value>) -> Option<Divert> {
+    let (target_key, target) = if let Some(target) = map.get("->").and_then(Value::as_str) {
+        ("->", target)
+    } else if let Some(target) = map.get("f()").and_then(Value::as_str) {
+        ("f()", target)
+    } else if let Some(target) = map.get("->t->").and_then(Value::as_str) {
+        ("->t->", target)
+    } else if let Some(target) = map.get("x()").and_then(Value::as_str) {
+        ("x()", target)
+    } else {
+        return None;
+    };
+
+    let (pushes_to_stack, stack_push_type, is_external) = match target_key {
+        "->" => (false, None, false),
+        "f()" => (true, Some(PushPopType::Function), false),
+        "->t->" => (true, Some(PushPopType::Tunnel), false),
+        "x()" => (false, None, true),
+        _ => (false, None, false),
+    };
+
+    let is_variable_target = map.get("var").and_then(Value::as_bool).unwrap_or(false);
+    let is_conditional = map.get("c").and_then(Value::as_bool).unwrap_or(false);
+    let external_args = map.get("exArgs").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+    Some(Divert {
+        target: target.to_string(),
+        is_variable_target,
+        pushes_to_stack,
+        stack_push_type,
+        is_external,
+        external_args,
+        is_conditional,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_control_command_and_text() {
+        let raw = r#"{
+            "inkVersion": 21,
+            "root": ["^hello", "\n", "done", null]
+        }"#;
+
+        let doc = load_ink_doc_from_str(raw).expect("json should parse");
+        assert_eq!(doc.ink_version, 21);
+        assert!(matches!(doc.root.content[0], RuntimeNode::Str(_)));
+        assert!(matches!(doc.root.content[1], RuntimeNode::Newline));
+        assert!(matches!(
+            doc.root.content[2],
+            RuntimeNode::ControlCommand(ControlCommandKind::Done)
+        ));
+    }
+
+    #[test]
+    fn parse_divert_choice_and_vars() {
+        let raw = r#"{
+            "inkVersion": 21,
+            "root": [
+                {"->": "knot"},
+                {"*": "choice.path", "flg": 16},
+                {"VAR=": "x", "re": true},
+                {"VAR?": "x"},
+                null
+            ]
+        }"#;
+
+        let doc = load_ink_doc_from_str(raw).expect("json should parse");
+
+        assert!(matches!(doc.root.content[0], RuntimeNode::Divert(_)));
+
+        let choice = match &doc.root.content[1] {
+            RuntimeNode::ChoicePoint(c) => c,
+            _ => panic!("expected choice point"),
+        };
+        assert_eq!(choice.path, "choice.path");
+        assert_eq!(choice.flags, 16);
+
+        let ass = match &doc.root.content[2] {
+            RuntimeNode::VariableAssignment(v) => v,
+            _ => panic!("expected assignment"),
+        };
+        assert!(!ass.is_new_declaration);
+
+        let vr = match &doc.root.content[3] {
+            RuntimeNode::VariableReference(v) => v,
+            _ => panic!("expected variable reference"),
+        };
+        assert_eq!(vr.name.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn unknown_string_token_becomes_unsupported_node() {
+        let raw = r#"{
+            "inkVersion": 21,
+            "root": ["UNKNOWN_PHASE1_TOKEN", null]
+        }"#;
+
+        let doc = load_ink_doc_from_str(raw).expect("json should parse");
+
+        assert!(matches!(
+            doc.root.content[0],
+            RuntimeNode::Unsupported(UnsupportedNode {
+                reason: UnsupportedNodeReason::UnknownStringToken,
+                ..
+            })
+        ));
     }
 }

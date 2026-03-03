@@ -6,3 +6,9 @@ license.workspace = true
 
 [dependencies]
 ink-model = { path = "../ink-model" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ink-json = { path = "../ink-json" }

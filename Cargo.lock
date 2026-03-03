@@ -197,6 +197,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ink-cli-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ink-compiler"
 version = "0.1.0"
 dependencies = [
@@ -251,6 +259,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ink-cli-protocol",
  "ink-compiler",
  "ink-json",
  "ink-runtime",

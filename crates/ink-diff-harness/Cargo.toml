@@ -1,0 +1,12 @@
+[package]
+name = "ink-diff-harness"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ink-json = { path = "../ink-json" }
+ink-runtime = { path = "../ink-runtime" }
+tempfile.workspace = true

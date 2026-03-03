@@ -3,6 +3,7 @@ members = [
   "crates/ink-model",
   "crates/ink-json",
   "crates/ink-runtime",
+  "crates/ink-compiler",
   "crates/inklecate-rs",
   "crates/ink-diff-harness",
 ]

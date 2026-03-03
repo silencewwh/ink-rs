@@ -197,13 +197,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ink-compiler"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ink-diff-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ink-compiler",
  "ink-json",
  "ink-runtime",
+ "serde_json",
  "tempfile",
 ]
 
@@ -240,6 +251,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "ink-compiler",
  "ink-json",
  "ink-runtime",
 ]

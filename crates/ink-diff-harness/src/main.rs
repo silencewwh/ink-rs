@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use ink_compiler::{canonicalize_json, CompileOptions};
+use std::fs;
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -33,6 +35,10 @@ struct Cli {
     /// 比较前去除双方输出中的空白差异
     #[arg(long)]
     normalize_whitespace: bool,
+
+    /// 跳过“编译产物 JSON 结构差分”
+    #[arg(long)]
+    skip_struct_diff: bool,
 }
 
 fn main() -> Result<()> {
@@ -45,11 +51,20 @@ fn main() -> Result<()> {
     let csharp_project = resolve_csharp_project(cli.csharp_project)?;
 
     let temp = TempDir::new().context("failed to create temp dir")?;
-    let output_json = temp.path().join("out.ink.json");
+    let csharp_output_json = temp.path().join("out.csharp.ink.json");
+    let rust_output_json = temp.path().join("out.rust.ink.json");
 
-    compile_with_csharp(&csharp_project, &cli.ink, &output_json)?;
-    let csharp_text = play_with_csharp(&csharp_project, &output_json)?;
-    let rust_result = play_with_rust(&output_json, &cli.choose_indices, cli.strict)?;
+    compile_with_csharp(&csharp_project, &cli.ink, &csharp_output_json)?;
+
+    compile_with_rust(&cli.ink, &rust_output_json, cli.strict)?;
+
+    if !cli.skip_struct_diff {
+        compare_compiled_json_structure(&csharp_output_json, &rust_output_json)?;
+        println!("[OK] compiled JSON structure matches (canonicalized)");
+    }
+
+    let csharp_text = play_with_csharp(&csharp_project, &csharp_output_json)?;
+    let rust_result = play_with_rust(&csharp_output_json, &cli.choose_indices, cli.strict)?;
 
     let csharp_for_cmp = if cli.normalize_whitespace {
         normalize_text_for_diff(&csharp_text)
@@ -122,6 +137,51 @@ fn play_with_csharp(csharp_project: &Path, output_json: &Path) -> Result<String>
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn compile_with_rust(ink_file: &Path, output_json: &Path, strict: bool) -> Result<()> {
+    let compile_out = ink_compiler::compile_ink_from_path(
+        ink_file,
+        CompileOptions {
+            strict,
+            source_name: Some(ink_file.display().to_string()),
+        },
+    )
+    .with_context(|| format!("failed to compile ink with rust compiler: {}", ink_file.display()))?;
+
+    fs::write(output_json, compile_out.story_json)
+        .with_context(|| format!("failed to write rust compiled json: {}", output_json.display()))?;
+
+    Ok(())
+}
+
+fn compare_compiled_json_structure(csharp_output_json: &Path, rust_output_json: &Path) -> Result<()> {
+    let csharp_raw = fs::read_to_string(csharp_output_json).with_context(|| {
+        format!(
+            "failed to read csharp compiled json: {}",
+            csharp_output_json.display()
+        )
+    })?;
+
+    let rust_raw = fs::read_to_string(rust_output_json).with_context(|| {
+        format!(
+            "failed to read rust compiled json: {}",
+            rust_output_json.display()
+        )
+    })?;
+
+    let csharp_canonical = canonicalize_json(&csharp_raw)
+        .context("failed to canonicalize csharp compiled json")?;
+    let rust_canonical =
+        canonicalize_json(&rust_raw).context("failed to canonicalize rust compiled json")?;
+
+    if csharp_canonical == rust_canonical {
+        Ok(())
+    } else {
+        bail!(
+            "[DIFF] compiled JSON structure differs (csharp vs rust compiler). You can re-run with --skip-struct-diff to focus on runtime behavior diff only"
+        )
+    }
 }
 
 #[derive(Debug)]
